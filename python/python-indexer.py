@@ -142,20 +142,16 @@ def on_job_feedback(job: Job, record: Dict[str, Any]) -> None:
     - Keep fast jobs at higher priority
     """
 
-    # Rule 1: Demote problematic paths (errors): error-based demotion
+    # Scheduling feedback (priority adjustment only)
     if "error" in record:
         job.queue_level = min(job.queue_level + 1, 3)
-        return
-
-    # Rule 2: Demote large files (CPU + I/O intensive): size-based demotion
-    size = record.get("size_bytes", 0)
-    if size > 10_000_000:  # > 10 MB
+    elif record.get("size_bytes", 0) > 10_000_000:
         job.queue_level = min(job.queue_level + 1, 3)
-        return
-
-    # Rule 3: Reward fast jobs (finished quickly)
-    if job.remaining <= 1:
+    else:
         job.queue_level = max(job.queue_level - 1, 0)
+
+    # IMPORTANT: indexing a file completes the job
+    return True
 
 
 # -----------------------------
