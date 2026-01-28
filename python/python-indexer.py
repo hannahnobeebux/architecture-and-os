@@ -196,7 +196,7 @@ def run_indexer(root: Path, output_jsonl: Path, scheduler_name: str, run_id: int
 
             if finished:
                 completed += 1
-                latencies.append(tick - job.arrival)
+                latencies.append(max(0, tick - job.arrival))
             else: 
                 # Re-queue the job if not finished (for RR/MLFQ)
                 ready.append(job)
@@ -236,16 +236,16 @@ if __name__ == "__main__":
         results.append(summary)
 
     # ===== Variant B: Round Robin / MLFQ =====
-    # SCHEDULER = "RR"
-    # for run in range(1, 4):
-    #     out_file = Path(f"index_results_RR_run{run}.jsonl")
-    #     summary = run_indexer(
-    #         root=root_folder,
-    #         output_jsonl=out_file,
-    #         scheduler_name="RR",
-    #         run_id=run,
-    #     )
-    #     results.append(summary)
+    SCHEDULER = "RR"
+    for run in range(1, 4):
+        out_file = Path(f"index_results_RR_run{run}.jsonl")
+        summary = run_indexer(
+            root=root_folder,
+            output_jsonl=out_file,
+            scheduler_name="RR",
+            run_id=run,
+        )
+        results.append(summary)
 
     # Print summary table (easy copy into report)
     print("\n=== Experiment Summary ===")
