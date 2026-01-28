@@ -1,9 +1,8 @@
 """
-Directory Indexer - Scheduler Starter Template
+Directory Indexer - Scheduler Prototype
 
-Learner task:
-- Adapt choose_next_job() (and optionally on_job_feedback()) to implement ONE scheduler:
-  FCFS, SJF, Round Robin, MLQ, or MLFQ.
+Variant A: FCFS (baseline)
+Variant B: Round Robin (pre-emptive)
 
 What this script does:
 - Walks a directory and creates "jobs" (each job = one file path to index)
@@ -20,11 +19,14 @@ import mimetypes
 from pathlib import Path
 from collections import deque
 from dataclasses import dataclass
+import time
 from typing import Deque, Dict, Any, List, Optional
 
+SCHEDULER = "FCFS"  # "FCFS" (Variant A) or "RR" (Variant B)
+TIME_QUANTUM = 1    # Used by Round Robin only
 
 # -----------------------------
-# Job model (students may extend)
+# Job model
 # -----------------------------
 @dataclass
 class Job:
@@ -36,17 +38,13 @@ class Job:
 
 
 # -----------------------------
-# Indexing work (the "CPU burst")
+# Indexing work (CPU burst)
 # -----------------------------
 def scan_one_path(path: Path) -> Dict[str, Any]:
-    """
-    Collect file details + basic metadata + basic permissions for ONE filesystem entry.
-    Keep it simple: permissions are POSIX mode bits + uid/gid where available.
-    """
     rec: Dict[str, Any] = {"path": str(path), "name": path.name}
 
     try:
-        st = path.lstat()  # don't follow symlinks
+        st = path.lstat() 
 
         rec["is_file"] = stat.S_ISREG(st.st_mode)
         rec["is_dir"] = stat.S_ISDIR(st.st_mode)
@@ -61,7 +59,6 @@ def scan_one_path(path: Path) -> Dict[str, Any]:
         mime, _ = mimetypes.guess_type(str(path))
         rec["mime_guess"] = mime
 
-        # Basic permissions snapshot
         rec["mode_octal"] = oct(stat.S_IMODE(st.st_mode))
         rec["uid"] = getattr(st, "st_uid", None)
         rec["gid"] = getattr(st, "st_gid", None)
@@ -77,24 +74,17 @@ def scan_one_path(path: Path) -> Dict[str, Any]:
 
 
 # -----------------------------
-# Job creation (workload)
+# Job creation
 # -----------------------------
-def build_jobs(root: Path) -> List[Job]:
-    """
-    Build jobs from all files under root.
-    We add simple fields that schedulers can use:
-    - arrival: increasing counter (simulates arrival time)
-    - est_cost: cheap estimate (based on size buckets; students can improve)
-    - remaining: work units for RR/MLFQ (default 1, but could be >1 for big files)
-    """
+def build_jobs(root: Path, repeat: int = 1) -> List[Job]:
     jobs: List[Job] = []
     tick = 0
 
-    for dirpath, _, filenames in os.walk(root):
-        d = Path(dirpath)
-        for fn in filenames:
-            p = d / fn
-            tick += 1
+    for _ in range(repeat):
+        for dirpath, _, filenames in os.walk(root):
+            for fn in filenames:
+                p = Path(dirpath) / fn
+                tick += 1
 
             # Simple estimate: larger files => higher cost (bucketed)
             try:
@@ -115,53 +105,75 @@ def build_jobs(root: Path) -> List[Job]:
 
 
 # -----------------------------
-# Scheduler hooks (students adapt)
+# Scheduler logic 
 # -----------------------------
 def choose_next_job(ready: Deque[Job], tick: int) -> Optional[Job]:
-    """
-    STUDENT TASK: Replace this logic to implement a scheduler.
-
-    Current behaviour: FCFS (pop from front)
-
-    Ideas:
-    - FCFS:         return ready.popleft()
-    - SJF:          choose job with smallest est_cost (then remove it)
-    - Round Robin:  pop left, run 1 unit, if remaining>0 append back
-    - MLQ:          maintain multiple queues based on queue_level
-    - MLFQ:         demote if it uses full quantum; promote/boost occasionally
-    """
-
-    
     if not ready:
         return None
-    return ready.popleft()
+    
+    # VARIANT A: First-Come-First-Served (FCFS)
+    if SCHEDULER == "FCFS":
+        return ready.popleft()
+    
+    # VARIANT B: Round Robin (RR)
+    if SCHEDULER == "RR":
+        job = ready.popleft()
+        job.remaining -= TIME_QUANTUM
+
+        if job.remaining > 0:
+            # Not finished: re-queue
+            ready.append(job)
+        else:
+            # Finished: return job
+            return job
+        
+        return job  # Return the job that just ran (even if not finished)
+
+    raise ValueError("Unknown scheduler")
 
 
 def on_job_feedback(job: Job, record: Dict[str, Any]) -> None:
     """
-    Optional STUDENT TASK:
-    Use job results to change scheduling behaviour.
-    Example MLFQ ideas:
-    - If record has "error": demote (slow/problematic paths)
-    - If size_bytes huge: demote
-    - If job finishes quickly: keep high priority
+    Feedback-driven scheduling adjustments (MLFQ-style)
+
+    Rules:
+    - Demote jobs that cause errors (e.g. permission issues)
+    - Demote jobs that are large (likely CPU / I/O heavy)
+    - Keep fast jobs at higher priority
     """
-    # Default: do nothing
-    pass
+
+    # Rule 1: Demote problematic paths (errors): error-based demotion
+    if "error" in record:
+        job.queue_level = min(job.queue_level + 1, 3)
+        return
+
+    # Rule 2: Demote large files (CPU + I/O intensive): size-based demotion
+    size = record.get("size_bytes", 0)
+    if size > 10_000_000:  # > 10 MB
+        job.queue_level = min(job.queue_level + 1, 3)
+        return
+
+    # Rule 3: Reward fast jobs (finished quickly)
+    if job.remaining <= 1:
+        job.queue_level = max(job.queue_level - 1, 0)
 
 
 # -----------------------------
 # Simulation loop (runs "scheduler")
 # -----------------------------
-def run_indexer(root: Path, output_jsonl: Path) -> None:
+def run_indexer(root: Path, output_jsonl: Path, scheduler_name: str, run_id: int) -> Dict[str, Any]:
     # Create jobs and load into a ready queue
-    jobs = build_jobs(root)
+    jobs = build_jobs(root, repeat=10)
 
     # In this simple model, all jobs are "ready" immediately.
     # Students can extend this by using arrival times more realistically.
     ready: Deque[Job] = deque(sorted(jobs, key=lambda j: j.arrival))
 
     tick = 0
+    completed = 0
+    latencies: List[int] = []
+
+    start_time = time.perf_counter()
 
     with output_jsonl.open("w", encoding="utf-8") as f:
         while ready:
@@ -174,21 +186,72 @@ def run_indexer(root: Path, output_jsonl: Path) -> None:
             # "Run" the job: do one index operation
             record = scan_one_path(job.path)
 
-            # Helpful fields to see scheduling outcomes
+            # Scheduling metadata
+            record["scheduler"] = scheduler_name
+            record["run_id"] = run_id
             record["arrival"] = job.arrival
             record["est_cost"] = job.est_cost
             record["queue_level"] = job.queue_level
             record["tick_ran"] = tick
+            record["remaining"] = job.remaining
 
             # Feedback hook (MLFQ-style adaptations)
-            on_job_feedback(job, record)
+            finished = on_job_feedback(job, record)
+
+            if finished:
+                completed += 1
+                latencies.append(tick - job.arrival)
+            else: 
+                # Re-queue the job if not finished (for RR/MLFQ)
+                ready.append(job)
 
             # Write one record per line (easy to parse and analyse)
             f.write(json.dumps(record) + "\n")
+    
+    end_time = time.perf_counter()
+
+    return {
+        "scheduler": scheduler_name,
+        "run_id": run_id,
+        "jobs": completed,
+        "ticks": tick,
+        "wall_time_sec": round(end_time - start_time, 4),
+        "avg_latency_ticks": round(
+            sum(latencies) / len(latencies), 2
+        ) if latencies else 0,
+    }
 
 
 if __name__ == "__main__":
-    root_folder = Path(r"")          # change me
-    out_file = Path("index_results.jsonl")  # output file
-    run_indexer(root_folder, out_file)
-    print(f"Done. Wrote: {out_file.resolve()}")
+    root_folder = Path("/Users/nobeebuxh/architecture-and-os/test_data") 
+
+    results: List[Dict[str, Any]] = []
+
+    # ===== Variant A: FCFS =====
+    SCHEDULER = "FCFS"
+    for run in range(1, 4):  # 3 runs (assignment requirement)
+        out_file = Path(f"index_results_FCFS_run{run}.jsonl")
+        summary = run_indexer(
+            root=root_folder,
+            output_jsonl=out_file,
+            scheduler_name="FCFS",
+            run_id=run,
+        )
+        results.append(summary)
+
+    # ===== Variant B: Round Robin / MLFQ =====
+    # SCHEDULER = "RR"
+    # for run in range(1, 4):
+    #     out_file = Path(f"index_results_RR_run{run}.jsonl")
+    #     summary = run_indexer(
+    #         root=root_folder,
+    #         output_jsonl=out_file,
+    #         scheduler_name="RR",
+    #         run_id=run,
+    #     )
+    #     results.append(summary)
+
+    # Print summary table (easy copy into report)
+    print("\n=== Experiment Summary ===")
+    for r in results:
+        print(r)
