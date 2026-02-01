@@ -4,10 +4,6 @@ Directory Indexer - Scheduler Prototype
 Variant A: FCFS (baseline)
 Variant B: Round Robin (pre-emptive)
 
-What this script does:
-- Walks a directory and creates "jobs" (each job = one file path to index)
-- Indexes each job: metadata + basic permissions (POSIX-style)
-- Writes results to JSON Lines (.jsonl)
 """
 
 from __future__ import annotations
@@ -22,7 +18,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed #for variant A
 from concurrent.futures import ProcessPoolExecutor #for variant B 
 
-TIME_QUANTUM = 1    # time slice allocated for round robin - for academic purposes
+TIME_QUANTUM = 1    # time slice allocated for round robin - for academic purposes only
 
 def hash_file(path: Path, algo: str = "sha256") -> str:
     h = hashlib.new(algo)
@@ -61,7 +57,7 @@ def scan_one_path(path: Path, hash_algo: str, scheduler_model: str,) -> Dict[str
 
     return rec
 
-#scheduler logic 
+# SCHEDULER LOGIC
 
 # VARIANT A - FCFS (Thread Pool)
 def run_threadpool_indexer(
@@ -133,6 +129,7 @@ def query_checksum(index_file: Path, filename: str) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--index", type=Path, help="Path to index file (used by find and checksum queries)")
     parser.add_argument("mode", choices=["index", "find", "checksum"])
     parser.add_argument("--root", type=Path)
     parser.add_argument("--variant", choices=["thread", "process"])
