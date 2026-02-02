@@ -136,16 +136,14 @@ if __name__ == "__main__":
         base_output = Path("file-indexer-output")
 
         if args.variant == "thread":
-            SCHEDULER = "FCFS"
             output_file = Path("file-indexer-output-thread.jsonl")
             run_threadpool_indexer(
-                args.root, output_file, args.hash, args.workers, SCHEDULER
+                args.root, output_file, args.hash, args.workers
             )
         elif args.variant == "process":
-            SCHEDULER = "RR"
             output_file = Path("file-indexer-output-multiprocess.jsonl")
             run_multiprocess_indexer(
-                args.root, output_file, args.hash, args.workers, SCHEDULER
+                args.root, output_file, args.hash, args.workers
             )
 
     elif args.mode == "find":
