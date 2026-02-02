@@ -1,279 +1,303 @@
-// #include <algorithm>
-// #include <chrono>
-// #include <deque>
-// #include <filesystem>
-// #include <fstream>
-// #include <iostream>
-// #include <optional>
-// #include <string>
-// #include <vector>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <vector>
+#include <thread>
+#include <mutex>
+#include <unordered_map>
+#include <cstring>
 
-// namespace fs = std::filesystem;
+namespace fs = std::filesystem;
 
-// // -----------------------------
-// // Job model (students may extend)
-// // -----------------------------
-// struct Job {
-//     fs::path path;
+// SHA-256 implementation for hashing (public-domain: can be used freely)
+#include <array>
+#include <vector>
+#include <sstream>
+#include <iomanip>
 
-//     // "arrival time" in ticks (simple counter in this simulation)
-//     int arrival = 0;
+class SHA256 {
+public:
+    static std::string hashFile(const std::filesystem::path& path) {
+        std::ifstream file(path, std::ios::binary);
+        if (!file) return "";
 
-//     // estimated cost (used for SJF/MLFQ ideas)
-//     int est_cost = 1;
+        SHA256 ctx;
+        char buf[8192];
+        while (file.read(buf, sizeof(buf)) || file.gcount()) {
+            ctx.update(reinterpret_cast<uint8_t*>(buf), file.gcount());
+        }
+        return ctx.final();
+    }
 
-//     // for RR/MLFQ: remaining "work units" (simple abstraction)
-//     int remaining = 1;
+private:
+    using uint32 = uint32_t;
+    using uint64 = uint64_t;
 
-//     // for MLQ/MLFQ: which queue the job is in
-//     int queue_level = 0;
-// };
+    std::array<uint32, 8> h = {
+        0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,
+        0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19
+    };
 
-// // -----------------------------
-// // Small helpers
-// // -----------------------------
-// static std::string jsonEscape(const std::string& s) {
-//     // Minimal JSON string escape (good enough for file paths/names)
-//     std::string out;
-//     out.reserve(s.size() + 8);
-//     for (char c : s) {
-//         switch (c) {
-//             case '\\': out += "\\\\"; break;
-//             case '"':  out += "\\\""; break;
-//             case '\n': out += "\\n"; break;
-//             case '\r': out += "\\r"; break;
-//             case '\t': out += "\\t"; break;
-//             default:   out += c; break;
-//         }
-//     }
-//     return out;
-// }
+    std::vector<uint8_t> buffer;
+    uint64 bitlen = 0;
 
-// static std::string permsToString(fs::perms p) {
-//     // POSIX-like rwx string, best-effort cross-platform
-//     auto bit = [&](fs::perms b) { return (p & b) != fs::perms::none; };
+    static uint32 rotr(uint32 x, uint32 n) {
+        return (x >> n) | (x << (32 - n));
+    }
 
-//     std::string s;
-//     s += bit(fs::perms::owner_read)  ? 'r' : '-';
-//     s += bit(fs::perms::owner_write) ? 'w' : '-';
-//     s += bit(fs::perms::owner_exec)  ? 'x' : '-';
+    static uint32 choose(uint32 e, uint32 f, uint32 g) {
+        return (e & f) ^ (~e & g);
+    }
 
-//     s += bit(fs::perms::group_read)  ? 'r' : '-';
-//     s += bit(fs::perms::group_write) ? 'w' : '-';
-//     s += bit(fs::perms::group_exec)  ? 'x' : '-';
+    static uint32 majority(uint32 a, uint32 b, uint32 c) {
+        return (a & b) ^ (a & c) ^ (b & c);
+    }
 
-//     s += bit(fs::perms::others_read)  ? 'r' : '-';
-//     s += bit(fs::perms::others_write) ? 'w' : '-';
-//     s += bit(fs::perms::others_exec)  ? 'x' : '-';
-//     return s;
-// }
+    static uint32 sig0(uint32 x) {
+        return rotr(x, 7) ^ rotr(x, 18) ^ (x >> 3);
+    }
 
-// // Convert filesystem::file_time_type to seconds since epoch (best-effort)
-// static long long fileTimeToEpochSeconds(fs::file_time_type ft) {
-//     // This conversion is a common approach for C++17; it’s “best-effort”
-//     using namespace std::chrono;
-//     auto sctp = time_point_cast<system_clock::duration>(
-//         ft - fs::file_time_type::clock::now() + system_clock::now()
-//     );
-//     return duration_cast<seconds>(sctp.time_since_epoch()).count();
-// }
+    static uint32 sig1(uint32 x) {
+        return rotr(x, 17) ^ rotr(x, 19) ^ (x >> 10);
+    }
 
-// // -----------------------------
-// // Indexing work (the "CPU burst")
-// // -----------------------------
-// static std::string scanOnePathJson(const fs::path& p) {
-//     // Build ONE JSON object (as a string) representing the file record.
-//     // Keep it simple: path, name, size, last_write_time, type flags, permissions, errors.
-//     std::string pathStr = p.string();
-//     std::string nameStr = p.filename().string();
+    static uint32 ep0(uint32 x) {
+        return rotr(x, 2) ^ rotr(x, 13) ^ rotr(x, 22);
+    }
 
-//     bool is_file = false;
-//     bool is_dir = false;
-//     bool is_symlink = false;
-//     unsigned long long size_bytes = 0;
-//     long long mtime_epoch = 0;
-//     std::string perms_rwx = "---------";
-//     std::string error;
+    static uint32 ep1(uint32 x) {
+        return rotr(x, 6) ^ rotr(x, 11) ^ rotr(x, 25);
+    }
 
-//     try {
-//         // status() follows symlinks; symlink_status() does not
-//         fs::file_status st = fs::symlink_status(p);
+    void transform(const uint8_t* chunk) {
+        static const uint32 k[64] = {
+            0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,
+            0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+            0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,
+            0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+            0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,
+            0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+            0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,
+            0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+            0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,
+            0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+            0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,
+            0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+            0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,
+            0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+            0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,
+            0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+        };
 
-//         is_symlink = fs::is_symlink(st);
-//         is_file = fs::is_regular_file(st);
-//         is_dir = fs::is_directory(st);
+        uint32 w[64];
+        for (int i = 0; i < 16; i++) {
+            w[i] = (chunk[i * 4] << 24) |
+                   (chunk[i * 4 + 1] << 16) |
+                   (chunk[i * 4 + 2] << 8) |
+                   (chunk[i * 4 + 3]);
+        }
+        for (int i = 16; i < 64; i++) {
+            w[i] = sig1(w[i - 2]) + w[i - 7] + sig0(w[i - 15]) + w[i - 16];
+        }
 
-//         // Size only valid for regular files
-//         if (is_file) {
-//             size_bytes = fs::file_size(p);
-//         }
+        uint32 a = h[0], b = h[1], c = h[2], d = h[3];
+        uint32 e = h[4], f = h[5], g = h[6], hh = h[7];
 
-//         // Last write time
-//         mtime_epoch = fileTimeToEpochSeconds(fs::last_write_time(p));
+        for (int i = 0; i < 64; i++) {
+            uint32 t1 = hh + ep1(e) + choose(e, f, g) + k[i] + w[i];
+            uint32 t2 = ep0(a) + majority(a, b, c);
+            hh = g;
+            g = f;
+            f = e;
+            e = d + t1;
+            d = c;
+            c = b;
+            b = a;
+            a = t1 + t2;
+        }
 
-//         // Permissions
-//         perms_rwx = permsToString(st.permissions());
-//     }
-//     catch (const fs::filesystem_error& e) {
-//         error = e.what();
-//     }
-//     catch (const std::exception& e) {
-//         error = e.what();
-//     }
+        h[0] += a; h[1] += b; h[2] += c; h[3] += d;
+        h[4] += e; h[5] += f; h[6] += g; h[7] += hh;
+    }
 
-//     // Note: Full ACLs on Windows (SIDs/ACEs) require platform APIs / extra libs.
-//     // This template records basic permission bits only.
+    void update(const uint8_t* data, size_t len) {
+        buffer.insert(buffer.end(), data, data + len);
+        bitlen += len * 8;
 
-//     std::string json = "{";
-//     json += "\"path\":\"" + jsonEscape(pathStr) + "\",";
-//     json += "\"name\":\"" + jsonEscape(nameStr) + "\",";
-//     json += "\"is_file\":" + std::string(is_file ? "true" : "false") + ",";
-//     json += "\"is_dir\":" + std::string(is_dir ? "true" : "false") + ",";
-//     json += "\"is_symlink\":" + std::string(is_symlink ? "true" : "false") + ",";
-//     json += "\"size_bytes\":" + std::to_string(size_bytes) + ",";
-//     json += "\"mtime_epoch\":" + std::to_string(mtime_epoch) + ",";
-//     json += "\"perms_rwx\":\"" + perms_rwx + "\"";
+        while (buffer.size() >= 64) {
+            transform(buffer.data());
+            buffer.erase(buffer.begin(), buffer.begin() + 64);
+        }
+    }
 
-//     if (!error.empty()) {
-//         json += ",\"error\":\"" + jsonEscape(error) + "\"";
-//     }
+    std::string final() {
+        buffer.push_back(0x80);
+        while (buffer.size() % 64 != 56) buffer.push_back(0);
+        for (int i = 7; i >= 0; i--) buffer.push_back((bitlen >> (i * 8)) & 0xff);
+        transform(buffer.data());
 
-//     json += "}";
-//     return json;
-// }
+        std::ostringstream out;
+        for (auto x : h) out << std::hex << std::setw(8) << std::setfill('0') << x;
+        return out.str();
+    }
+};
 
-// // -----------------------------
-// // Job creation (workload)
-// // -----------------------------
-// static std::vector<Job> buildJobs(const fs::path& root) {
-//     std::vector<Job> jobs;
-//     int tick = 0;
+// "Record" is the in-memory data model for one indexed file
+// represents one complete index entry, equivalent to one line of the JSONL file for the Python indexer
+// stores all metadata collected for a single file, used in the index
+struct Record {
+    std::string filename;
+    std::string path;
+    uint64_t size;
+    uint64_t mtime;
+    std::string hash;
+};
 
-//     for (auto const& entry : fs::recursive_directory_iterator(root)) {
-//         if (!entry.is_regular_file()) continue; // keep it simple: index files only
+//a thread‑safe queue that distributes file indexing tasks among worker threads
+//enables parallel execution within a single process.
+class JobQueue {
+public:
+    void push(const fs::path& p) {
+        std::lock_guard<std::mutex> lock(m_);
+        q_.push(p);
+        cv_.notify_one();
+    }
 
-//         ++tick;
-//         fs::path p = entry.path();
+    bool pop(fs::path& p) {
+        std::unique_lock<std::mutex> lock(m_);
+        cv_.wait(lock, [&]{ return done_ || !q_.empty(); });
 
-//         // Simple estimate: size buckets -> est_cost (1,2,3)
-//         unsigned long long size_bytes = 0;
-//         try {
-//             size_bytes = entry.file_size();
-//         } catch (...) {
-//             size_bytes = 0;
-//         }
+        if (q_.empty()) return false;
+        p = q_.front();
+        q_.pop();
+        return true;
+    }
 
-//         int est = 1;
-//         if (size_bytes >= 100000ULL && size_bytes < 10000000ULL) est = 2;   // 100KB..10MB
-//         else if (size_bytes >= 10000000ULL) est = 3;                        // >=10MB
+    void done() {
+        std::lock_guard<std::mutex> lock(m_);
+        done_ = true;
+        cv_.notify_all();
+    }
 
-//         Job j;
-//         j.path = p;
-//         j.arrival = tick;
-//         j.est_cost = est;
-//         j.remaining = est;     // “work units” tied to cost
-//         j.queue_level = 0;     // starts high for MLFQ ideas
-//         jobs.push_back(j);
-//     }
+private:
+    std::queue<fs::path> q_;
+    std::mutex m_;
+    std::condition_variable cv_;
+    bool done_ = false;
+};
 
-//     // Arrival order
-//     std::sort(jobs.begin(), jobs.end(), [](const Job& a, const Job& b) {
-//         return a.arrival < b.arrival;
-//     });
+//this method is executed by each thread
+//it repeatedly takes jobs from the shared queue and processes them until no work remains
+//it defines how each file is indexed and how the results are stored safely for variant A
+static void worker(JobQueue& jobs,
+                   std::vector<Record>& records,
+                   std::mutex& recMutex)
+{
+    fs::path p;
+    //processes jobs until the queue is empty and marked done
+    while (jobs.pop(p)) {
+        try {
+            //performs indexing for one file (CPU-bound work) eg: reading metadata and computing SHA-256 hash
+            Record r;
+            r.filename = p.filename().string();
+            r.path = p.string();
+            r.size = fs::file_size(p);
+            r.mtime = fs::last_write_time(p).time_since_epoch().count();
+            r.hash = SHA256::hashFile(p);
 
-//     return jobs;
-// }
+            //stores the result in the shared records vector (protected by mutex)
+            std::lock_guard<std::mutex> lock(recMutex);
+            records.push_back(std::move(r));
+        }
+        catch (...) {
+            // ignore unreadable files
+        }
+    }
+}
 
-// // -----------------------------
-// // Scheduler hooks (students adapt)
-// // -----------------------------
-// static std::optional<Job> chooseNextJob(std::deque<Job>& ready, int /*tick*/) {
-//     /*
-//       STUDENT TASK: Replace this logic to implement a scheduler.
+//this method coordinates the overall indexing process for variant A
+//it sets up the job queue, spawns worker threads, and collects the final results
+static std::vector<Record> indexDirectory(const fs::path& root, int workers)
+{
+    JobQueue jobs;
+    std::vector<Record> records;
+    std::mutex recMutex; //protects records from concurrent writes
 
-//       Current behaviour: FCFS (pop from front)
+    //spawns worker threads
+    std::vector<std::thread> threads;
+    for (int i = 0; i < workers; ++i) {
+        threads.emplace_back(worker,
+                             std::ref(jobs),
+                             std::ref(records),
+                             std::ref(recMutex));
+    }
 
-//       Ideas:
-//       - FCFS:         pop_front
-//       - SJF:          choose job with smallest est_cost (remove it)
-//       - Round Robin:  pop_front, run 1 unit, if remaining>0 push_back
-//       - MLQ:          multiple queues by queue_level, always choose highest queue first
-//       - MLFQ:         demote when it uses full quantum; boost occasionally
-//     */
-//     if (ready.empty()) return std::nullopt;
+    //recursively scans the directory and enqueues each file (Job instance) for processing
+    for (auto& entry : fs::recursive_directory_iterator(root)) {
+        if (entry.is_regular_file()) {
+            jobs.push(entry.path());
+        }
+    }
 
-//     Job j = ready.front();
-//     ready.pop_front();
-//     return j;
-// }
+    jobs.done();
+    for (auto& t : threads) t.join(); //waits for workers to finish
 
-// static void onJobFeedback(Job& /*job*/, const std::string& /*jsonRecord*/) {
-//     /*
-//       Optional STUDENT TASK:
-//       Use results to change scheduling behaviour (MLFQ-style).
+    //returns all collected records
+    //this enables CLI queries such as `find` and `checksum`
+    return records;
+}
 
-//       Examples:
-//       - If jsonRecord contains "error": demote job.queue_level
-//       - If job.est_cost is high: demote
-//       - If job finishes quickly: keep high priority
-//     */
-// }
+//CLI QUERY: find all files larger than a specified size in MB
+static void queryFind(const std::vector<Record>& records, uint64_t minMB)
+{
+    uint64_t threshold = minMB * 1024ULL * 1024ULL;
+    for (const auto& r : records) {
+        if (r.size > threshold) {
+            std::cout << r.path << " " << r.size << "\n";
+        }
+    }
+}
 
-// // -----------------------------
-// // Simulation loop (runs "scheduler")
-// // -----------------------------
-// static void runIndexer(const fs::path& root, const fs::path& outputJsonl) {
-//     std::vector<Job> jobs = buildJobs(root);
+//CLI QUERY: get the SHA-256 checksum of a specified filename
+static void queryChecksum(const std::vector<Record>& records,
+                          const std::string& filename)
+{
+    for (const auto& r : records) {
+        if (r.filename == filename) {
+            std::cout << r.hash << "\n";
+            return;
+        }
+    }
+    std::cout << "File not found\n";
+}
 
-//     // In this simple model, all jobs are ready immediately.
-//     std::deque<Job> ready(jobs.begin(), jobs.end());
+//entrypoint
+int main(int argc, char* argv[])
+{
+    if (argc < 3) {
+        std::cerr <<
+          "Usage:\n"
+          "  index <root> [workers]\n"
+          "  find <root> <MB>\n"
+          "  checksum <root> <filename>\n";
+        return 1;
+    }
 
-//     std::ofstream out(outputJsonl);
-//     if (!out) {
-//         throw std::runtime_error("Could not open output file for writing.");
-//     }
+    std::string mode = argv[1];
+    fs::path root = argv[2];
 
-//     int tick = 0;
+    int workers = (argc >= 4 && mode == "index")
+                    ? std::stoi(argv[3])
+                    : 4;
 
-//     while (!ready.empty()) {
-//         ++tick;
+    auto records = indexDirectory(root, workers);
 
-//         auto next = chooseNextJob(ready, tick);
-//         if (!next.has_value()) continue;
+    if (mode == "find") {
+        queryFind(records, std::stoull(argv[3]));
+    }
+    else if (mode == "checksum") {
+        queryChecksum(records, argv[3]);
+    }
 
-//         Job job = next.value();
-
-//         // "Run" job (index one file)
-//         std::string record = scanOnePathJson(job.path);
-
-//         // Add a few scheduling fields (simple: append before closing brace)
-//         // (Teaching-friendly; students can make proper JSON building later.)
-//         if (!record.empty() && record.back() == '}') {
-//             record.pop_back();
-//             record += ",\"arrival\":" + std::to_string(job.arrival);
-//             record += ",\"est_cost\":" + std::to_string(job.est_cost);
-//             record += ",\"queue_level\":" + std::to_string(job.queue_level);
-//             record += ",\"tick_ran\":" + std::to_string(tick);
-//             record += "}";
-//         }
-
-//         onJobFeedback(job, record);
-
-//         out << record << "\n";
-//     }
-
-//     std::cout << "Done. Wrote: " << outputJsonl << "\n";
-// }
-
-// int main() {
-//     try {
-//         fs::path root = R"(C:\temp)";              // change me
-//         fs::path out  = "index_results.jsonl";     // output file
-//         runIndexer(root, out);
-//     }
-//     catch (const std::exception& e) {
-//         std::cerr << "Fatal error: " << e.what() << "\n";
-//         return 1;
-//     }
-//     return 0;
-// }
+    return 0;
+}

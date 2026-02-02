@@ -1,8 +1,8 @@
 """
-Directory Indexer - Scheduler Prototype
+Python File Indexer
 
-Variant A: FCFS (baseline)
-Variant B: Round Robin (pre-emptive)
+Variant A: Thread-pool
+Variant B: True Multicore using multiprocessing
 
 """
 
@@ -18,8 +18,6 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed #for variant A
 from concurrent.futures import ProcessPoolExecutor #for variant B 
 
-TIME_QUANTUM = 1    # time slice allocated for round robin - for academic purposes only
-
 def hash_file(path: Path, algo: str = "sha256") -> str:
     h = hashlib.new(algo)
     with path.open("rb") as f:
@@ -29,9 +27,8 @@ def hash_file(path: Path, algo: str = "sha256") -> str:
 
 # scanning files for multiprocessing method
 def scan_one_path_mp(args):
-    path, hash_algo, scheduler_model, time_quantum = args
+    path, hash_algo, scheduler_model = args
     record = scan_one_path(path, hash_algo, scheduler_model)
-    record["time_quantum"] = time_quantum
     return record
 
 # scanning files for thread-pool method
@@ -57,9 +54,7 @@ def scan_one_path(path: Path, hash_algo: str, scheduler_model: str,) -> Dict[str
 
     return rec
 
-# SCHEDULER LOGIC
-
-# VARIANT A - FCFS (Thread Pool)
+# VARIANT A — Thread Pool
 def run_threadpool_indexer(
     root: Path,
     output_jsonl: Path,
@@ -87,14 +82,13 @@ def run_threadpool_indexer(
             record["variant"] = "thread_pool"
             f.write(json.dumps(record) + "\n")
 
-# VARIANT B — Round Robin (Multiprocessing)
+# VARIANT B — Multiprocessing
 def run_multiprocess_indexer(
     root: Path,
     output: Path,
     hash_algo: str,
     workers: int,
     scheduler_model: str,
-    time_quantum: int,
 ) -> None:
     files = [p for p in root.rglob("*") if p.is_file()]
 
@@ -103,13 +97,13 @@ def run_multiprocess_indexer(
 
         for record in pool.map(
             scan_one_path_mp,
-            [(p, hash_algo, scheduler_model, time_quantum) for p in files]
+            [(p, hash_algo, scheduler_model) for p in files]
         ):
             record["variant"] = "multiprocessing"
             f.write(json.dumps(record) + "\n")
 
 
-# reads a previously generated index file and lists all files larger than a given size
+# for the CLI query: reads a previously generated index file and lists all files larger than a given size
 def query_find(index_file: Path, min_mb: int) -> None:
     threshold = min_mb * 1024 * 1024
     for line in index_file.open():
@@ -117,7 +111,7 @@ def query_find(index_file: Path, min_mb: int) -> None:
         if rec.get("size", 0) > threshold:
             print(rec["path"], rec["size"])
 
-# searches a previously generated index file and prints the hash of the specified filename if it exists
+# for the CLI query: searches a previously generated index file and prints the hash of the specified filename if it exists
 def query_checksum(index_file: Path, filename: str) -> None:
     for line in index_file.open():
         rec = json.loads(line)
@@ -126,7 +120,7 @@ def query_checksum(index_file: Path, filename: str) -> None:
             return
     print("File not found")
 
-
+# main method with CLI implementation
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--index", type=Path, help="Path to index file (used by find and checksum queries)")
@@ -155,7 +149,7 @@ if __name__ == "__main__":
             SCHEDULER = "RR"
             output_file = Path("file-indexer-output-multiprocess.jsonl")
             run_multiprocess_indexer(
-                args.root, output_file, args.hash, args.workers, SCHEDULER, TIME_QUANTUM
+                args.root, output_file, args.hash, args.workers, SCHEDULER
             )
 
     elif args.mode == "find":
@@ -164,4 +158,3 @@ if __name__ == "__main__":
     elif args.mode == "checksum":
         query_checksum(args.index, args.file)
 
-    

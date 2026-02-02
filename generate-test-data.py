@@ -7,7 +7,6 @@ Creates a small, heterogeneous directory tree containing:
 - One large binary file
 - One restricted file (permission denied where supported)
 
-Safe to run multiple times.
 """
 
 from pathlib import Path
