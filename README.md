@@ -4,7 +4,6 @@ This repository includes file indexers written in both Python and C++.
 Before starting, use the `generate-test-data.py` script to generate the test_data folder in the root directory of this project. It creates a restricted file that may not work on Windows machines. 
 
 ## Python 
----
 The Python implementation provides a service‑style file indexer that supports concurrency analysis and CLI‑based queries. Two variants are implemented to evaluate different execution models.
 
 - Variant A — Thread‑pool (GIL‑limited)
