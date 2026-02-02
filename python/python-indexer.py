@@ -27,17 +27,16 @@ def hash_file(path: Path, algo: str = "sha256") -> str:
 
 # scanning files for multiprocessing method
 def scan_one_path_mp(args):
-    path, hash_algo, scheduler_model = args
-    record = scan_one_path(path, hash_algo, scheduler_model)
+    path, hash_algo= args
+    record = scan_one_path(path, hash_algo)
     return record
 
 # scanning files for thread-pool method
-def scan_one_path(path: Path, hash_algo: str, scheduler_model: str,) -> Dict[str, Any]:
+def scan_one_path(path: Path, hash_algo: str) -> Dict[str, Any]:
     rec: Dict[str, Any] = {
         "filename": path.name,
         "path": str(path),
         "hash_algo": hash_algo,
-        "scheduler_model": scheduler_model,
     }
 
     try:
@@ -59,8 +58,7 @@ def run_threadpool_indexer(
     root: Path,
     output_jsonl: Path,
     hash_algo: str,
-    workers: int,
-    scheduler_model: str,
+    workers: int
 ) -> None:
     files = [p for p in root.rglob("*") if p.is_file()]
 
@@ -71,8 +69,7 @@ def run_threadpool_indexer(
             pool.submit(
                 scan_one_path,
                 p,
-                hash_algo,
-                scheduler_model
+                hash_algo
             ): p
             for p in files
         }
@@ -87,8 +84,7 @@ def run_multiprocess_indexer(
     root: Path,
     output: Path,
     hash_algo: str,
-    workers: int,
-    scheduler_model: str,
+    workers: int
 ) -> None:
     files = [p for p in root.rglob("*") if p.is_file()]
 
@@ -97,7 +93,7 @@ def run_multiprocess_indexer(
 
         for record in pool.map(
             scan_one_path_mp,
-            [(p, hash_algo, scheduler_model) for p in files]
+            [(p, hash_algo) for p in files]
         ):
             record["variant"] = "multiprocessing"
             f.write(json.dumps(record) + "\n")
