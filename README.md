@@ -115,4 +115,4 @@ Explanation of command:
 - `../test_data`: directory previously indexed
 - `bigfile.bin`: filename to query
 
-Both implemenattions enable direct comparison of concurrency models, compiler optimisations, and runtime behaviour across languages.
+Both implmentations enable direct comparison of concurrency models, compiler optimisations, and runtime behaviour across languages.
